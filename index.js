@@ -1020,6 +1020,146 @@ async function run() {
       }
     );
 
+     //------------ EVENT REGISTRATIONS ROUTES -----------
+    
+        // Register for event
+        app.post(
+          "/events/:id/register",
+          verifyFirebaseToken,
+          verifyMember,
+          async (req, res) => {
+            const { id } = req.params;
+            const event = await db
+              .collection("events")
+              .findOne({ _id: new ObjectId(id) });
+    
+            if (!event) {
+              return res.status(404).json({ message: "Event not found" });
+            }
+    
+            const existingReg = await db.collection("eventRegistrations").findOne({
+              eventId: new ObjectId(id),
+              userEmail: req.dbUser.email,
+            });
+    
+            if (existingReg) {
+              return res
+                .status(400)
+                .json({ message: "Already registered for this event" });
+            }
+    
+            if (event.maxAttendees) {
+              const count = await db
+                .collection("eventRegistrations")
+                .countDocuments({
+                  eventId: new ObjectId(id),
+                  status: "registered",
+                });
+              if (count >= event.maxAttendees) {
+                return res.status(400).json({ message: "Event is full" });
+              }
+            }
+    
+            if (event.isPaid && event.eventFee > 0) {
+              return res
+                .status(400)
+                .json({ message: "This event requires payment" });
+            }
+    
+            const registration = {
+              eventId: new ObjectId(id),
+              userEmail: req.dbUser.email,
+              clubId: event.clubId,
+              status: "registered",
+              paymentId: null,
+              registeredAt: new Date(),
+            };
+    
+            await db.collection("eventRegistrations").insertOne(registration);
+            res.status(201).json({ message: "Registered successfully" });
+          }
+        );
+    
+        // Get member's registrations
+        app.get(
+          "/member/registrations",
+          verifyFirebaseToken,
+          verifyMember,
+          async (req, res) => {
+            const registrations = await db
+              .collection("eventRegistrations")
+              .aggregate([
+                { $match: { userEmail: req.dbUser.email } },
+                {
+                  $lookup: {
+                    from: "events",
+                    localField: "eventId",
+                    foreignField: "_id",
+                    as: "event",
+                  },
+                },
+                { $unwind: "$event" },
+                {
+                  $lookup: {
+                    from: "clubs",
+                    localField: "event.clubId",
+                    foreignField: "_id",
+                    as: "club",
+                  },
+                },
+                { $unwind: "$club" },
+              ])
+              .toArray();
+    
+            res.json(registrations);
+          }
+        );
+    
+        // Get event registrations manager
+        app.get(
+          "/manager/events/:id/registrations",
+          verifyFirebaseToken,
+          verifyManager,
+          async (req, res) => {
+            const { id } = req.params;
+            const event = await db
+              .collection("events")
+              .findOne({ _id: new ObjectId(id) });
+    
+            if (!event) {
+              return res.status(404).json({ message: "Event not found" });
+            }
+    
+            const club = await db
+              .collection("clubs")
+              .findOne({ _id: event.clubId });
+            if (
+              club.managerEmail !== req.dbUser.email &&
+              req.dbUser.role !== "admin"
+            ) {
+              return res.status(403).json({ message: "Not authorized" });
+            }
+    
+            const registrations = await db
+              .collection("eventRegistrations")
+              .aggregate([
+                { $match: { eventId: new ObjectId(id) } },
+                {
+                  $lookup: {
+                    from: "users",
+                    localField: "userEmail",
+                    foreignField: "email",
+                    as: "user",
+                  },
+                },
+                { $unwind: "$user" },
+              ])
+              .toArray();
+    
+            res.json(registrations);
+          }
+        );
+
 //---------------------------------
     // Health check
     app.get("/health", (req, res) => {
