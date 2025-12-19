@@ -634,7 +634,119 @@ async function run() {
         res.json(members);
       }
     );
-//---------------------------------
+
+   //------ MEMBERSHIPS ROUTES ----------------
+   
+       // Join club free
+       app.post(
+         "/clubs/:id/join",
+         verifyFirebaseToken,
+         verifyMember,
+         async (req, res) => {
+           const { id } = req.params;
+           const club = await db
+             .collection("clubs")
+             .findOne({ _id: new ObjectId(id) });
+   
+           if (!club || club.status !== "approved") {
+             return res
+               .status(404)
+               .json({ message: "Club not found or not approved" });
+           }
+   
+           const existingMembership = await db.collection("memberships").findOne({
+             userEmail: req.dbUser.email,
+             clubId: new ObjectId(id),
+           });
+   
+           if (existingMembership) {
+             return res
+               .status(400)
+               .json({ message: "Already a member of this club" });
+           }
+   
+           if (club.membershipFee > 0) {
+             return res
+               .status(400)
+               .json({ message: "This club requires payment" });
+           }
+   
+           const membership = {
+             userEmail: req.dbUser.email,
+             clubId: new ObjectId(id),
+             status: "active",
+             paymentId: null,
+             joinedAt: new Date(),
+           };
+   
+           await db.collection("memberships").insertOne(membership);
+           res.status(201).json({ message: "Joined club successfully" });
+         }
+       );
+   
+       // Get member's memberships
+       app.get(
+         "/member/memberships",
+         verifyFirebaseToken,
+         verifyMember,
+         async (req, res) => {
+           const memberships = await db
+             .collection("memberships")
+             .aggregate([
+               { $match: { userEmail: req.dbUser.email } },
+               {
+                 $lookup: {
+                   from: "clubs",
+                   localField: "clubId",
+                   foreignField: "_id",
+                   as: "club",
+                 },
+               },
+               { $unwind: "$club" },
+             ])
+             .toArray();
+   
+           res.json(memberships);
+         }
+       );
+   
+       // Update membership status
+       app.patch(
+         "/memberships/:id/status",
+         verifyFirebaseToken,
+         verifyManager,
+         async (req, res) => {
+           const { id } = req.params;
+           const { status } = req.body;
+   
+           if (!["active", "expired", "pendingPayment"].includes(status)) {
+             return res.status(400).json({ message: "Invalid status" });
+           }
+   
+           const membership = await db
+             .collection("memberships")
+             .findOne({ _id: new ObjectId(id) });
+           if (!membership) {
+             return res.status(404).json({ message: "Membership not found" });
+           }
+   
+           const club = await db
+             .collection("clubs")
+             .findOne({ _id: membership.clubId });
+           if (
+             club.managerEmail !== req.dbUser.email &&
+             req.dbUser.role !== "admin"
+           ) {
+             return res.status(403).json({ message: "Not authorized" });
+           }
+   
+           await db
+             .collection("memberships")
+             .updateOne({ _id: new ObjectId(id) }, { $set: { status } });
+   
+           res.json({ message: "Membership status updated" });
+         }
+       );
    
 
 
