@@ -748,7 +748,277 @@ async function run() {
          }
        );
    
+// ---------- EVENTS ROUTES -----------
 
+    // Get all events public
+    app.get("/events", async (req, res) => {
+      const { sort, clubId, upcoming } = req.query;
+
+      const query = {};
+      if (clubId) {
+        query.clubId = new ObjectId(clubId);
+      }
+      if (upcoming === "true") {
+        query.eventDate = { $gte: new Date() };
+      }
+
+      let sortOption = { eventDate: 1 };
+      if (sort === "date-desc") sortOption = { eventDate: -1 };
+      if (sort === "newest") sortOption = { createdAt: -1 };
+      if (sort === "oldest") sortOption = { createdAt: 1 };
+
+      const events = await db
+        .collection("events")
+        .aggregate([
+          { $match: query },
+          {
+            $lookup: {
+              from: "clubs",
+              localField: "clubId",
+              foreignField: "_id",
+              as: "club",
+            },
+          },
+          { $unwind: "$club" },
+          { $match: { "club.status": "approved" } },
+          {
+            $lookup: {
+              from: "eventRegistrations",
+              localField: "_id",
+              foreignField: "eventId",
+              as: "registrations",
+            },
+          },
+          {
+            $addFields: { registrationsCount: { $size: "$registrations" } },
+          },
+          { $project: { registrations: 0 } },
+          { $sort: sortOption },
+        ])
+        .toArray();
+
+      res.json(events);
+    });
+
+    // Get single event
+    app.get("/events/:id", async (req, res) => {
+      const { id } = req.params;
+      const event = await db
+        .collection("events")
+        .aggregate([
+          { $match: { _id: new ObjectId(id) } },
+          {
+            $lookup: {
+              from: "clubs",
+              localField: "clubId",
+              foreignField: "_id",
+              as: "club",
+            },
+          },
+          { $unwind: "$club" },
+          {
+            $lookup: {
+              from: "eventRegistrations",
+              localField: "_id",
+              foreignField: "eventId",
+              as: "registrations",
+            },
+          },
+          {
+            $addFields: { registrationsCount: { $size: "$registrations" } },
+          },
+          { $project: { registrations: 0 } },
+        ])
+        .toArray();
+
+      if (!event[0]) {
+        return res.status(404).json({ message: "Event not found" });
+      }
+
+      res.json(event[0]);
+    });
+
+    // Create event manager
+    app.post(
+      "/events",
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        const {
+          clubId,
+          title,
+          description,
+          eventDate,
+          location,
+          isPaid,
+          eventFee,
+          maxAttendees,
+        } = req.body;
+
+        const club = await db
+          .collection("clubs")
+          .findOne({ _id: new ObjectId(clubId) });
+        if (!club) {
+          return res.status(404).json({ message: "Club not found" });
+        }
+
+        if (club.managerEmail !== req.dbUser.email) {
+          return res
+            .status(403)
+            .json({ message: "Not authorized to create event for this club" });
+        }
+
+        const newEvent = {
+          clubId: new ObjectId(clubId),
+          title,
+          description,
+          eventDate: new Date(eventDate),
+          location,
+          isPaid: isPaid || false,
+          eventFee: isPaid ? eventFee : 0,
+          maxAttendees: maxAttendees || null,
+          createdAt: new Date(),
+        };
+
+        const result = await db.collection("events").insertOne(newEvent);
+        res
+          .status(201)
+          .json({ message: "Event created", eventId: result.insertedId });
+      }
+    );
+
+    // Update event manager owner
+    app.patch(
+      "/events/:id",
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        const { id } = req.params;
+        const event = await db
+          .collection("events")
+          .findOne({ _id: new ObjectId(id) });
+
+        if (!event) {
+          return res.status(404).json({ message: "Event not found" });
+        }
+
+        const club = await db
+          .collection("clubs")
+          .findOne({ _id: event.clubId });
+        if (
+          club.managerEmail !== req.dbUser.email &&
+          req.dbUser.role !== "admin"
+        ) {
+          return res.status(403).json({ message: "Not authorized" });
+        }
+
+        const {
+          title,
+          description,
+          eventDate,
+          location,
+          isPaid,
+          eventFee,
+          maxAttendees,
+        } = req.body;
+
+        await db.collection("events").updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              ...(title && { title }),
+              ...(description && { description }),
+              ...(eventDate && { eventDate: new Date(eventDate) }),
+              ...(location && { location }),
+              ...(isPaid !== undefined && { isPaid }),
+              ...(eventFee !== undefined && { eventFee }),
+              ...(maxAttendees !== undefined && { maxAttendees }),
+            },
+          }
+        );
+
+        res.json({ message: "Event updated successfully" });
+      }
+    );
+
+    // Delete event manager owner
+    app.delete(
+      "/events/:id",
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        const { id } = req.params;
+        const event = await db
+          .collection("events")
+          .findOne({ _id: new ObjectId(id) });
+
+        if (!event) {
+          return res.status(404).json({ message: "Event not found" });
+        }
+
+        const club = await db
+          .collection("clubs")
+          .findOne({ _id: event.clubId });
+        if (
+          club.managerEmail !== req.dbUser.email &&
+          req.dbUser.role !== "admin"
+        ) {
+          return res.status(403).json({ message: "Not authorized" });
+        }
+
+        await db.collection("events").deleteOne({ _id: new ObjectId(id) });
+        await db
+          .collection("eventRegistrations")
+          .deleteMany({ eventId: new ObjectId(id) });
+
+        res.json({ message: "Event deleted successfully" });
+      }
+    );
+
+    // Get manager's events
+    app.get(
+      "/manager/events",
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        const clubs = await db
+          .collection("clubs")
+          .find({ managerEmail: req.dbUser.email })
+          .toArray();
+        const clubIds = clubs.map((c) => c._id);
+
+        const events = await db
+          .collection("events")
+          .aggregate([
+            { $match: { clubId: { $in: clubIds } } },
+            {
+              $lookup: {
+                from: "clubs",
+                localField: "clubId",
+                foreignField: "_id",
+                as: "club",
+              },
+            },
+            { $unwind: "$club" },
+            {
+              $lookup: {
+                from: "eventRegistrations",
+                localField: "_id",
+                foreignField: "eventId",
+                as: "registrations",
+              },
+            },
+            {
+              $addFields: { registrationsCount: { $size: "$registrations" } },
+            },
+            { $project: { registrations: 0 } },
+          ])
+          .sort({ eventDate: -1 })
+          .toArray();
+
+        res.json(events);
+      }
+    );
 
 //---------------------------------
     // Health check
