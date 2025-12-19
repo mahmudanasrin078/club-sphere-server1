@@ -1470,7 +1470,6 @@ async function run() {
       }
     );
 
-    
     // Health check
     app.get("/health", (req, res) => {
       res.json({ status: "ok", timestamp: new Date() });
