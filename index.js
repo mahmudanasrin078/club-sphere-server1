@@ -185,12 +185,45 @@ async function run() {
     });
 
     // Create user
+    // app.post("/users", async (req, res) => {
+    //   const { name, email, photoURL } = req.body;
+
+    //   const existingUser = await db.collection("users").findOne({ email });
+    //   if (existingUser) {
+    //     return res.json({ message: "User already exists", user: existingUser });
+    //   }
+
+    //   const newUser = {
+    //     name,
+    //     email,
+    //     photoURL: photoURL || "",
+    //     role: "member",
+    //     createdAt: new Date(),
+    //   };
+
+    //   await db.collection("users").insertOne(newUser);
+    //   res.status(201).json({ message: "User created", user: newUser });
+    // });
+
     app.post("/users", async (req, res) => {
       const { name, email, photoURL } = req.body;
 
-      const existingUser = await db.collection("users").findOne({ email });
+      const usersCollection = db.collection("users");
+      const existingUser = await usersCollection.findOne({ email });
+
       if (existingUser) {
-        return res.json({ message: "User already exists", user: existingUser });
+        await usersCollection.updateOne(
+          { email },
+          {
+            $set: {
+              name: name || existingUser.name,
+              photoURL: photoURL || existingUser.photoURL,
+            },
+          }
+        );
+
+        const updatedUser = await usersCollection.findOne({ email });
+        return res.json({ message: "User updated", user: updatedUser });
       }
 
       const newUser = {
@@ -201,7 +234,7 @@ async function run() {
         createdAt: new Date(),
       };
 
-      await db.collection("users").insertOne(newUser);
+      await usersCollection.insertOne(newUser);
       res.status(201).json({ message: "User created", user: newUser });
     });
 
